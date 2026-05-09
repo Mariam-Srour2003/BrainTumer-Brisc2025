@@ -101,7 +101,7 @@ def build_joint_trainer(config: ServiceConfig | None = None) -> Trainer:
     settings = config or get_settings()
     model = DEFAULT_MODEL_REGISTRY.create(
         settings.joint_model_name,
-        num_classes=len(settings.class_names),
+        num_classes=len(settings.joint_class_names),
         segmentation_classes=1,
         in_channels=3,
         encoder_name="resnet34",
@@ -239,7 +239,7 @@ def run_registered_model_training(model_name: str, config: ServiceConfig | None 
         elif model_name.startswith("hybrid."):
             model = DEFAULT_MODEL_REGISTRY.create(
                 model_name,
-                num_classes=len(settings.class_names),
+                num_classes=len(settings.joint_class_names),
                 segmentation_classes=1,
                 in_channels=3,
             )
@@ -354,7 +354,7 @@ def _load_model_for_checkpoint(checkpoint_path: Path, settings: ServiceConfig) -
             else:
                 model = DEFAULT_MODEL_REGISTRY.create(
                     candidate,
-                    num_classes=len(settings.class_names),
+                    num_classes=len(settings.joint_class_names),
                     segmentation_classes=1,
                     in_channels=3,
                     encoder_name="resnet34",
@@ -398,7 +398,7 @@ def run_checkpoint_evaluation(
         metrics=evaluation.metrics,
         analysis=evaluation.metadata.get("analysis", {}),
         checkpoint_path=checkpoint_path,
-        class_names=settings.class_names,
+        class_names=settings.joint_class_names if task == "joint" else settings.class_names,
     )
 
     return {

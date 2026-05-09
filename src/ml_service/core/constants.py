@@ -13,6 +13,8 @@ MODELS_DIR = PROJECT_ROOT / "models"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 NOTEBOOKS_DIR = PROJECT_ROOT / "notebooks"
 CLASS_NAMES = ("glioma", "meningioma", "no_tumor", "pituitary")
+# Joint dataset now includes no_tumor images with blank masks injected during preprocessing.
+JOINT_CLASS_NAMES = ("glioma", "meningioma", "no_tumor", "pituitary")
 TRAIN_SPLITS = ("train", "test")
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 DEFAULT_IMAGE_SIZE = (224, 224)

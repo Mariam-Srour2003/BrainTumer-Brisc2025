@@ -16,6 +16,7 @@ from ...core.config import ServiceConfig, get_settings
 from ...inference.predictor import Predictor
 from ...explainability import ExplainabilityMethod, ExplainabilityTask
 from ...experiments.runner import run_explainability_batch
+from ...utils.checkpoint import resolve_checkpoint_path
 
 
 def explain_endpoint(payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -109,7 +110,7 @@ def register_explain_routes(app: Any) -> None:
             return {"status": "error", "message": "checkpoint_name or checkpoint_path is required."}
 
         if checkpoint_path in {None, ""}:
-            checkpoint_path = config.models_dir / "checkpoints" / f"{checkpoint_name}.pt"
+            checkpoint_path = resolve_checkpoint_path(config.models_dir / "checkpoints", str(checkpoint_name))
 
         try:
             return run_explainability_batch(

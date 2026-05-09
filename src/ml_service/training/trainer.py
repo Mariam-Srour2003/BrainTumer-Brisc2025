@@ -211,7 +211,19 @@ def _oversample_balanced(records: list[Any], label_to_index: dict[str, int]) -> 
 
 def _freeze_backbone(model: Any, frozen: bool) -> None:
     """Freeze or unfreeze all backbone (non-head) parameters."""
-    head_kws = {"fc", "head", "classifier", "classification_head", "segmentation_head", "dec"}
+    head_kws = {
+        "fc",
+        "head",
+        "classifier",
+        "classification_head",
+        "segmentation_head",
+        "dec",
+        "projection",
+        "router",
+        "fusion",
+        "context",
+        "gate",
+    }
     for name, p in model.named_parameters():
         if not any(kw in name for kw in head_kws):
             p.requires_grad = not frozen
@@ -1107,12 +1119,12 @@ class Trainer:
             log_step(self.logger, f"Backbone frozen for first {tc.freeze_epochs} epochs.")
 
         optimizer = self._build_optimizer(model)
-        ckpt_path = self._training_checkpoint_path(checkpoint_name or "hybrid.multitask_joint", split)
+        ckpt_path = self._training_checkpoint_path(checkpoint_name or getattr(self.config, "joint_model_name", "hybrid.adpt_net"), split)
         start_epoch, resume_meta = (
             self._try_resume_training_state(model, optimizer, ckpt_path) if resume else (0, {})
         )
 
-        label_to_index = _label_to_index_map(self.config.class_names)
+        label_to_index = _label_to_index_map(self.config.joint_class_names)
         raw_weights = _compute_class_weights(base_train, label_to_index)
         class_weights = torch.tensor(raw_weights, dtype=torch.float32)
         if self.device is not None:
@@ -1146,13 +1158,37 @@ class Trainer:
         if start_epoch >= tc.epochs:
             log_step(self.logger, f"Already at epoch {start_epoch}; skipping joint training.")
 
+        # Must match _freeze_backbone's keyword set exactly — these params stay trainable
+        # during the frozen phase and are already registered in the optimizer.  Only params
+        # whose names contain NONE of these keywords were actually frozen and need to be added.
+        _freeze_head_kws = {
+            "fc", "head", "classifier", "classification_head", "segmentation_head",
+            "dec", "projection", "router", "fusion", "context", "gate",
+        }
+
         for epoch in range(start_epoch, tc.epochs):
             if tc.gradual_unfreeze and epoch == tc.freeze_epochs:
                 _freeze_backbone(model, frozen=False)
-                optimizer = self._build_optimizer(model)
-                scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+                # Add only the newly-unfrozen backbone params (those absent from the optimizer).
+                # Using _freeze_head_kws (= _freeze_backbone's set) avoids adding params that
+                # were already trainable and present in an existing optimizer group.
+                backbone_params = [
+                    p for n, p in model.named_parameters()
+                    if p.requires_grad and not any(kw in n for kw in _freeze_head_kws)
+                ]
+                if backbone_params:
+                    current_scale = _lr_scale(epoch, tc.warmup_epochs, tc.epochs, tc.min_lr_factor)
+                    new_pg = {
+                        "params": backbone_params,
+                        "lr": tc.learning_rate * tc.backbone_lr_factor * current_scale,
+                        "base_lr": tc.learning_rate * tc.backbone_lr_factor,
+                    }
+                    base_opt = optimizer.base_optimizer if isinstance(optimizer, _LookaheadOptimizer) else optimizer
+                    base_opt.add_param_group(new_pg)
+                    if isinstance(optimizer, _LookaheadOptimizer):
+                        optimizer._slow.append([p.clone().detach() for p in backbone_params])
                 swa_scheduler = None
-                log_step(self.logger, "Backbone unfrozen — full network now training.")
+                log_step(self.logger, "Backbone unfrozen — backbone params added to optimizer, head state preserved.")
 
             if not swa_active:
                 self._update_lr(optimizer, epoch, tc.epochs)
@@ -1194,11 +1230,11 @@ class Trainer:
                     seg_loss = _combined_seg_loss(outputs["segmentation"], masks)
                     if aug_mode_j is not None:
                         cls_loss = (
-                            lam * _focal_loss(outputs["classification"], la, tc.focal_gamma, class_weights, tc.label_smoothing)
-                            + (1.0 - lam) * _focal_loss(outputs["classification"], lb, tc.focal_gamma, class_weights, tc.label_smoothing)
+                            lam * F.cross_entropy(outputs["classification"], la, weight=class_weights, label_smoothing=tc.label_smoothing)
+                            + (1.0 - lam) * F.cross_entropy(outputs["classification"], lb, weight=class_weights, label_smoothing=tc.label_smoothing)
                         )
                     else:
-                        cls_loss = _focal_loss(outputs["classification"], labels, tc.focal_gamma, class_weights, tc.label_smoothing)
+                        cls_loss = F.cross_entropy(outputs["classification"], labels, weight=class_weights, label_smoothing=tc.label_smoothing)
                         if tc.use_r_drop and model.training and _random.random() < 0.4:
                             outputs2 = model(images)
                             cls2 = outputs2["classification"]
@@ -1264,7 +1300,7 @@ class Trainer:
                     with torch.amp.autocast('cuda', enabled=use_amp):
                         outputs = model(images)
                         v_seg = _combined_seg_loss(outputs["segmentation"], masks)
-                        v_cls = _focal_loss(outputs["classification"], labels, tc.focal_gamma, class_weights, tc.label_smoothing)
+                        v_cls = F.cross_entropy(outputs["classification"], labels, weight=class_weights, label_smoothing=tc.label_smoothing)
                         v_loss = tc.segmentation_loss_weight * v_seg + tc.classification_loss_weight * v_cls
                     val_loss += float(v_loss.item())
                     val_batches += 1
@@ -1368,7 +1404,7 @@ class Trainer:
             model.to(self.device, non_blocking=True)
         model.eval()
 
-        label_to_index = _label_to_index_map(self.config.class_names)
+        label_to_index = _label_to_index_map(self.config.joint_class_names)
         total_loss = total_seg = total_cls = 0.0
         n_batches = 0
         cls_preds: list[np.ndarray] = []

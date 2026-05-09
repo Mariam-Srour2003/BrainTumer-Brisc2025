@@ -73,6 +73,56 @@ def versioned_checkpoint_path(checkpoint_root: Path, model_name: str, run_date: 
     return model_checkpoint_run_dir(checkpoint_root, model_name, run_date) / filename
 
 
+def resolve_checkpoint_path(
+    checkpoint_root: Path,
+    checkpoint_name: str,
+    model_date: str | None = None,
+) -> Path | None:
+    """Resolve a checkpoint name to an existing artifact on disk."""
+
+    safe_model_name = sanitize_checkpoint_name(checkpoint_name)
+
+    direct_candidates = [
+        checkpoint_root / f"{safe_model_name}.pt",
+        checkpoint_root / f"{safe_model_name}.train.pt",
+    ]
+    for candidate in direct_candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+    model_dir = checkpoint_root / safe_model_name
+    if model_date:
+        safe_date = sanitize_checkpoint_name(model_date)
+        dated_dir = model_dir / safe_date
+        if dated_dir.exists() and dated_dir.is_dir():
+            dated_candidates = sorted(
+                (path for path in dated_dir.rglob("*.pt") if path.is_file()),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            if dated_candidates:
+                return dated_candidates[0]
+
+    if model_dir.exists() and model_dir.is_dir():
+        model_candidates = sorted(
+            (path for path in model_dir.rglob("*.pt") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if model_candidates:
+            return model_candidates[0]
+
+    loose_candidates = sorted(
+        (path for path in checkpoint_root.glob(f"{safe_model_name}*.pt") if path.is_file()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if loose_candidates:
+        return loose_candidates[0]
+
+    return None
+
+
 def clear_model_checkpoints(checkpoint_root: Path, model_name: str) -> list[str]:
     """Delete all known checkpoint artifacts for one model and return removed paths."""
 

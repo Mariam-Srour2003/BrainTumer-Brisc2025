@@ -148,13 +148,20 @@ if router is not None:
             try:
                 from ...training.trainer import Trainer, TrainingConfig
                 # Segmentation models are binary (tumor vs background) — 1 output channel.
-                # Classification and joint models use 4 classes (one per tumor type).
+                # Joint models use joint_class_names (no no_tumor); classification uses all 4 classes.
                 _is_seg = model_name.startswith("segmentation.")
+                _is_hybrid = model_name.startswith("hybrid.")
+                if _is_seg:
+                    _num_classes = 1
+                elif _is_hybrid:
+                    _num_classes = len(settings.joint_class_names)
+                else:
+                    _num_classes = len(settings.class_names)
                 model = DEFAULT_MODEL_REGISTRY.create(
                     model_name,
-                    num_classes=1 if _is_seg else len(settings.class_names),
+                    num_classes=_num_classes,
                     in_channels=3,
-                    **({"segmentation_classes": 1} if model_name.startswith("hybrid.") else {}),
+                    **({"segmentation_classes": 1} if _is_hybrid else {}),
                 )
                 tc = TrainingConfig.from_service_config(settings)
                 trainer = Trainer(model, config=settings, training_config=tc)

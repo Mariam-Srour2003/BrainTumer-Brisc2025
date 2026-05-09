@@ -43,7 +43,7 @@ def create_app(model: Any | None = None) -> Any:
         version="0.1.0",
         description=(
             "Segmentation and classification API for the BRISC 2025 brain tumor dataset. "
-            "Supports U-Net, ResNet, EfficientNet, ViT, and joint multitask models with Grad-CAM/SHAP/LIME explainability."
+            "Supports U-Net, ResNet, EfficientNet, ViT, ADPT-Net, and joint multitask models with Grad-CAM/SHAP/LIME explainability."
         ),
     )
 

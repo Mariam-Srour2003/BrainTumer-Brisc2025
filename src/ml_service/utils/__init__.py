@@ -6,6 +6,7 @@ from .checkpoint import (
 	load_checkpoint,
 	model_checkpoint_dir,
 	model_checkpoint_run_dir,
+	resolve_checkpoint_path,
 	sanitize_checkpoint_name,
 	save_checkpoint,
 	versioned_checkpoint_path,

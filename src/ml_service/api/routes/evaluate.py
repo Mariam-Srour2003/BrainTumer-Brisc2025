@@ -13,6 +13,7 @@ from ...core.config import get_settings
 from ...core.runtime import get_logger, log_step
 from ...evaluation import Evaluator
 from ...experiments.runner import run_checkpoint_evaluation
+from ...utils.checkpoint import resolve_checkpoint_path
 
 router = APIRouter() if APIRouter is not None else None
 logger = get_logger("api.routes.evaluate")
@@ -49,7 +50,7 @@ def evaluate_checkpoint(payload: dict[str, Any] | None = None) -> dict[str, Any]
         checkpoint_name = payload.get("checkpoint_name")
         if checkpoint_name:
             settings = get_settings()
-            checkpoint_path = settings.models_dir / "checkpoints" / f"{checkpoint_name}.pt"
+            checkpoint_path = resolve_checkpoint_path(settings.models_dir / "checkpoints", str(checkpoint_name))
 
     if not checkpoint_path:
         return {"status": "error", "message": "checkpoint_path or checkpoint_name is required."}
