@@ -179,6 +179,14 @@ def _apply_mixup(
     return mixed, labels, labels[idx], lam
 
 
+def _extract_boundary(mask: Any, kernel_size: int = 3) -> Any:
+    """Extract boundary pixels from a binary mask via morphological erosion."""
+    import torch.nn.functional as _F
+    pad = kernel_size // 2
+    eroded = -_F.max_pool2d(-mask, kernel_size=kernel_size, stride=1, padding=pad)
+    return (mask - eroded).clamp(0.0, 1.0)
+
+
 def _lr_scale(epoch: int, warmup: int, total: int, min_factor: float) -> float:
     """Linear warmup then cosine decay to min_factor × base_lr."""
     if epoch < warmup:
@@ -1239,7 +1247,54 @@ class Trainer:
                             outputs2 = model(images)
                             cls2 = outputs2["classification"]
                             cls_loss = cls_loss + tc.r_drop_alpha * _r_drop_loss(outputs["classification"], cls2)
-                    raw_loss = tc.segmentation_loss_weight * seg_loss + tc.classification_loss_weight * cls_loss
+                    # ── Uncertainty-aware task weighting (Kendall & Gal 2018) ──
+                    # If the model exposes log_var_seg / log_var_cls parameters,
+                    # use learned weighting; otherwise fall back to fixed config weights.
+                    if hasattr(model, "log_var_seg") and hasattr(model, "log_var_cls"):
+                        seg_w = torch.exp(-model.log_var_seg)
+                        cls_w = torch.exp(-model.log_var_cls)
+                        raw_loss = (
+                            seg_w * seg_loss + cls_w * cls_loss
+                            + model.log_var_seg + model.log_var_cls
+                        )
+                    else:
+                        raw_loss = tc.segmentation_loss_weight * seg_loss + tc.classification_loss_weight * cls_loss
+                    # ── Auxiliary losses (TGD-ADPT-Net initial predictions) ──
+                    if "initial_segmentation" in outputs:
+                        raw_loss = raw_loss + 0.4 * tc.segmentation_loss_weight * _combined_seg_loss(outputs["initial_segmentation"], masks)
+                    if "initial_classification" in outputs:
+                        if aug_mode_j is not None:
+                            aux_cls = (
+                                lam * F.cross_entropy(outputs["initial_classification"], la, weight=class_weights, label_smoothing=tc.label_smoothing)
+                                + (1.0 - lam) * F.cross_entropy(outputs["initial_classification"], lb, weight=class_weights, label_smoothing=tc.label_smoothing)
+                            )
+                        else:
+                            aux_cls = F.cross_entropy(outputs["initial_classification"], labels, weight=class_weights, label_smoothing=tc.label_smoothing)
+                        raw_loss = raw_loss + 0.4 * tc.classification_loss_weight * aux_cls
+                    # ── Cross-task consistency ─────────────────────────────
+                    # Predicted mask presence must agree with the class label:
+                    # no_tumor → mask should be blank; tumor → mask non-zero.
+                    # Use raw logits + BCEWithLogits (AMP-safe; sigmoid is monotone
+                    # so max(logits) ↔ max(sigmoid(logits))).
+                    _no_tumor_idx = label_to_index.get("no_tumor", -1)
+                    if _no_tumor_idx >= 0:
+                        mask_max_logit = outputs["segmentation"].flatten(1).max(dim=1).values
+                        if aug_mode_j is not None:
+                            consistency_loss = (
+                                lam * F.binary_cross_entropy_with_logits(mask_max_logit, (la != _no_tumor_idx).float())
+                                + (1.0 - lam) * F.binary_cross_entropy_with_logits(mask_max_logit, (lb != _no_tumor_idx).float())
+                            )
+                        else:
+                            consistency_loss = F.binary_cross_entropy_with_logits(
+                                mask_max_logit, (labels != _no_tumor_idx).float()
+                            )
+                        raw_loss = raw_loss + 0.25 * consistency_loss
+                    # ── Boundary supervision ───────────────────────────────
+                    # Penalises contour inaccuracy directly → lowers Hausdorff.
+                    if "boundary" in outputs:
+                        raw_loss = raw_loss + 0.2 * F.binary_cross_entropy_with_logits(
+                            outputs["boundary"], _extract_boundary(masks)
+                        )
                     loss = raw_loss / tc.accumulation_steps
 
                 scaler.scale(loss).backward()
