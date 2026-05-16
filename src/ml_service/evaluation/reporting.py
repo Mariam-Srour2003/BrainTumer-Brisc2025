@@ -19,7 +19,12 @@ def _to_jsonable(value: Any) -> Any:
     if isinstance(value, np.ndarray):
         return value.tolist()
 
-    if isinstance(value, (str, int, float, bool)) or value is None:
+    if isinstance(value, float):
+        if value != value or value == float("inf") or value == float("-inf"):
+            return None
+        return value
+
+    if isinstance(value, (str, int, bool)) or value is None:
         return value
 
     return str(value)

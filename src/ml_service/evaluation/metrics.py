@@ -272,7 +272,7 @@ def _segmentation_metrics(predictions: Any, targets: Any) -> dict[str, float]:
     return {
         "dice_score": float(np.mean(dice_scores)) if dice_scores else 0.0,
         "iou": float(np.mean(iou_scores)) if iou_scores else 0.0,
-        "hausdorff_distance": float(np.mean(finite_hausdorff_scores)) if finite_hausdorff_scores else float(inf),
+        "hausdorff_distance": float(np.mean(finite_hausdorff_scores)) if finite_hausdorff_scores else 0.0,
     }
 
 

@@ -703,7 +703,7 @@ var CLASS_COLORS = {
 };
 
 function classColor(name) {
-  return CLASS_COLORS[(name||'').toLowerCase()] || { badge:'', bar:'bar-default' };
+  return CLASS_COLORS[String(name == null ? '' : name).toLowerCase()] || { badge:'', bar:'bar-default' };
 }
 
 var CLASS_LABELS = {
@@ -712,8 +712,8 @@ var CLASS_LABELS = {
 };
 
 function formatClassName(name) {
-  var key = (name || '').toLowerCase();
-  return CLASS_LABELS[key] || (name || 'Unknown').replace(/_/g, ' ');
+  var key = String(name == null ? '' : name).toLowerCase();
+  return CLASS_LABELS[key] || String(name == null ? 'Unknown' : name).replace(/_/g, ' ');
 }
 
 function renderClassification(data, container, sectionTitle) {
@@ -990,18 +990,20 @@ async function runEvaluate() {
   spinner('evalSpinner', true);
   setHtml('evalResults', '<div style="color:var(--muted);padding:8px">Running evaluation...</div>');
 
-  var r = await apiFetch('/evaluate/checkpoint', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ checkpoint_name: model, split: split }),
-  });
-  spinner('evalSpinner', false);
+  try {
+    var r = await apiFetch('/evaluate/checkpoint', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ checkpoint_name: model, split: split }),
+    });
+    spinner('evalSpinner', false);
 
-  var out = document.getElementById('evalResults');
-  if (!r.ok || r.data.status === 'error') {
-    if (out) out.innerHTML = '<div style="color:var(--error);padding:12px">' + (r.data.message || r.data.detail || 'Evaluation failed') + '</div>';
-    toast('Evaluation failed', 'error');
-    return;
-  }
+    var out = document.getElementById('evalResults');
+    if (!r.ok || r.data.status === 'error' || r.data.status === 'failed') {
+      var errMsg = r.data.message || r.data.detail || r.data.error || 'Evaluation failed';
+      if (out) out.innerHTML = '<div style="color:var(--error);padding:12px">' + errMsg + '</div>';
+      toast('Evaluation failed: ' + errMsg, 'error');
+      return;
+    }
 
   var metrics  = r.data.metrics || {};
   var analysis = (r.data.metadata && r.data.metadata.analysis) || {};
@@ -1062,6 +1064,12 @@ async function runEvaluate() {
 
   if (out) out.innerHTML = html;
   toast('Evaluation complete', 'success');
+  } catch(e) {
+    spinner('evalSpinner', false);
+    var out2 = document.getElementById('evalResults');
+    if (out2) out2.innerHTML = '<div style="color:var(--error);padding:12px">Error: ' + (e.message || e) + '</div>';
+    toast('Evaluation error: ' + (e.message || e), 'error');
+  }
 }
 
 // ─── RUN EXPLAIN ──────────────────────────────────────────────────────────────
