@@ -1707,19 +1707,24 @@ class Trainer:
         for record in records:
             seed = _random.randint(0, 2**31) if augment else None
             img_cached = image_cache.get(str(record.image_path)) if image_cache else None
-            mask_src = (mask_cache.get(str(record.mask_path)) if mask_cache else None) or record.mask_path
             if img_cached is not None:
                 img = apply_augmentation_only(img_cached.copy(), preprocessing, seed=seed)
             else:
                 img = preprocess_image(record.image_path, preprocessing, augment=augment, seed=seed)
-            if augment and seed is not None:
-                mask = preprocess_mask_augmented(mask_src, preprocessing, seed=seed)
-            else:
-                mask = preprocess_mask(mask_src, preprocessing)
             imgs.append(torch.tensor(image_to_array(img, preprocessing), dtype=torch.float32))
-            masks_t.append(torch.tensor(
-                (np.asarray(mask, dtype=np.float32) / 255.0)[None, ...], dtype=torch.float32
-            ))
+            if record.mask_path is None:
+                # no_tumor: segmentation target is an all-zero mask
+                h, w = preprocessing.image_size
+                masks_t.append(torch.zeros(1, h, w, dtype=torch.float32))
+            else:
+                mask_src = (mask_cache.get(str(record.mask_path)) if mask_cache else None) or record.mask_path
+                if augment and seed is not None:
+                    mask = preprocess_mask_augmented(mask_src, preprocessing, seed=seed)
+                else:
+                    mask = preprocess_mask(mask_src, preprocessing)
+                masks_t.append(torch.tensor(
+                    (np.asarray(mask, dtype=np.float32) / 255.0)[None, ...], dtype=torch.float32
+                ))
             if record.label not in label_to_index:
                 raise ValueError(f"Unknown label '{record.label}' for {record.image_path}.")
             labels_t.append(label_to_index[record.label])

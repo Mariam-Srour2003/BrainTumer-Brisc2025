@@ -172,6 +172,7 @@ function init() {
       btn.classList.add('active');
       var section = document.getElementById('tab-' + btn.dataset.tab);
       if (section) section.classList.add('active');
+      if (btn.dataset.tab === 'evaluate') loadSavedReports();
     });
   });
 
@@ -323,19 +324,82 @@ function populateSelectsForMode(mode) {
   if (cur && filtered.indexOf(cur) >= 0) sel.value = cur;
 }
 
-function populateAllSelects(models) {
-  // Train select (all models including view-specific variants)
-  var trainSel = document.getElementById('trainModelSelect');
-  if (trainSel) {
-    var curTrain = trainSel.value;
-    trainSel.innerHTML = '<option value="">— Select model —</option>';
-    models.forEach(function(m) {
-      var opt = document.createElement('option');
-      opt.value = m; opt.textContent = formatModelName(m);
-      trainSel.appendChild(opt);
-    });
-    if (curTrain) trainSel.value = curTrain;
+// ─── TRAIN MODEL LIST STATE ──────────────────────────────────────────────────
+
+var _trainAllModels = [];
+var _trainFilter = 'all';
+var _trainSearch = '';
+
+function _modelTaskCategory(m) {
+  if (m === 'classification.view_classifier') return 'view';
+  if (isViewSpecific(m)) return 'view';
+  if (m.startsWith('classification.')) return 'classification';
+  if (m.startsWith('segmentation.'))   return 'segmentation';
+  if (m.startsWith('hybrid.'))         return 'hybrid';
+  return 'other';
+}
+
+function _trainTagHtml(cat) {
+  var map = {
+    classification: ['CLS',  'cls'],
+    segmentation:   ['SEG',  'seg'],
+    hybrid:         ['JOINT','hyb'],
+    view:           ['VIEW', 'view'],
+  };
+  var pair = map[cat] || ['?', 'cls'];
+  return '<span class="tm-tag tm-tag-' + pair[1] + '">' + pair[0] + '</span>';
+}
+
+function renderTrainList() {
+  var list = document.getElementById('trainModelList');
+  if (!list) return;
+  var search = _trainSearch.toLowerCase();
+  var items = _trainAllModels.filter(function(m) {
+    var matchFilter = _trainFilter === 'all' || _modelTaskCategory(m) === _trainFilter;
+    var matchSearch = !search || m.toLowerCase().indexOf(search) >= 0
+                              || formatModelName(m).toLowerCase().indexOf(search) >= 0;
+    return matchFilter && matchSearch;
+  });
+
+  if (items.length === 0) {
+    list.innerHTML = '<div style="color:var(--muted);padding:12px;font-size:13px">No models match filter.</div>';
+    updateSelectedCount();
+    return;
   }
+
+  list.innerHTML = items.map(function(m) {
+    var cat = _modelTaskCategory(m);
+    return '<label class="tm-item">'
+      + '<input type="checkbox" value="' + m + '" />'
+      + '<span class="tm-label">' + formatModelName(m) + '</span>'
+      + _trainTagHtml(cat)
+      + '</label>';
+  }).join('');
+  updateSelectedCount();
+}
+
+function updateSelectedCount() {
+  var checked = document.querySelectorAll('#trainModelList input[type=checkbox]:checked');
+  var el = document.getElementById('trainSelectedCount');
+  if (el) el.textContent = checked.length + ' model' + (checked.length !== 1 ? 's' : '') + ' selected';
+  var btn = document.getElementById('btnTrain');
+  if (btn) btn.textContent = checked.length > 1
+    ? '▶ Train Selected (' + checked.length + ')'
+    : '▶ Train Selected';
+}
+
+function getSelectedTrainModels() {
+  var checked = document.querySelectorAll('#trainModelList input[type=checkbox]:checked');
+  return Array.from(checked).map(function(cb) { return cb.value; });
+}
+
+function populateAllSelects(models) {
+  _trainAllModels = models.slice();
+  renderTrainList();
+
+  // Attach live checkbox listeners after rendering
+  var list = document.getElementById('trainModelList');
+  if (list) list.addEventListener('change', updateSelectedCount);
 
   // Eval & XAI selects (all models)
   ['evalModelSelect', 'xaiModelSelect'].forEach(function(id) {
@@ -354,9 +418,9 @@ function populateAllSelects(models) {
     if (cur) sel.value = cur;
   });
 
-  // Enable buttons if we have models
+  // Enable buttons
   var hasModels = models.length > 0;
-  ['btnTrain','btnTrainAll','btnTune','btnEvaluate'].forEach(function(id) {
+  ['btnTrain','btnTrainAll','btnTune','btnEvaluate','btnReport'].forEach(function(id) {
     var b = document.getElementById(id);
     if (b) b.disabled = !hasModels;
   });
@@ -528,46 +592,118 @@ function wireButtons() {
     else toast('Preprocess failed: ' + (r.data.message || JSON.stringify(r.data)), 'error');
   });
 
-  var btnTrain = document.getElementById('btnTrain');
-  if (btnTrain) btnTrain.addEventListener('click', function() {
-    var sel   = document.getElementById('trainModelSelect');
-    var model = sel ? sel.value : '';
-    if (!model) { toast('Select a model first', 'error'); return; }
-    spinner('trainSpinner', true);
-    statusBar('trainStatus', true);
-    setText('trainStatusText', 'Training ' + formatModelName(model) + '...');
-    setResult('trainResult', 'Starting ' + model + '...');
-
-    lossChart.startSSE(model, getApiBase(), {
-      onDone: async function(evt) {
-        spinner('trainSpinner', false);
-        statusBar('trainStatus', false);
-        setResult('trainResult', evt, true);
-        toast(formatModelName(model) + ' trained successfully', 'success');
-        await loadModels();
-      },
-      onError: function(msg) {
-        spinner('trainSpinner', false);
-        statusBar('trainStatus', false);
-        setResult('trainResult', { error: msg });
-        toast('Training failed: ' + msg, 'error');
-      },
+  // ── Filter chips ──
+  var chips = document.querySelectorAll('.train-chips .chip');
+  chips.forEach(function(chip) {
+    chip.addEventListener('click', function() {
+      chips.forEach(function(c) { c.classList.remove('chip-active'); });
+      chip.classList.add('chip-active');
+      _trainFilter = chip.getAttribute('data-filter') || 'all';
+      renderTrainList();
     });
   });
 
-  var btnTrainAll = document.getElementById('btnTrainAll');
-  if (btnTrainAll) btnTrainAll.addEventListener('click', async function() {
+  // ── Search input ──
+  var trainSearch = document.getElementById('trainSearch');
+  if (trainSearch) trainSearch.addEventListener('input', function() {
+    _trainSearch = trainSearch.value;
+    renderTrainList();
+  });
+
+  // ── Select All / Clear All ──
+  var btnSelectAll = document.getElementById('btnSelectAll');
+  if (btnSelectAll) btnSelectAll.addEventListener('click', function() {
+    document.querySelectorAll('#trainModelList input[type=checkbox]').forEach(function(cb) { cb.checked = true; });
+    updateSelectedCount();
+  });
+  var btnClearAll = document.getElementById('btnClearAll');
+  if (btnClearAll) btnClearAll.addEventListener('click', function() {
+    document.querySelectorAll('#trainModelList input[type=checkbox]').forEach(function(cb) { cb.checked = false; });
+    updateSelectedCount();
+  });
+
+  // ── Batch Train ──
+  var _batchQueue = [], _batchIndex = 0, _batchResults = [];
+
+  function _batchNext() {
+    if (_batchIndex >= _batchQueue.length) {
+      spinner('trainSpinner', false);
+      statusBar('trainStatus', false);
+      var prog = document.getElementById('batchProgress');
+      if (prog) prog.style.display = 'none';
+      var failed = _batchResults.filter(function(r) { return r.status === 'error'; }).length;
+      var ok = _batchResults.length - failed;
+      toast('Training complete: ' + ok + ' succeeded, ' + failed + ' failed', failed ? 'warn' : 'success');
+      var html = '<div style="margin-top:8px">';
+      _batchResults.forEach(function(r) {
+        var icon = r.status === 'error' ? '✗' : '✓';
+        var col  = r.status === 'error' ? 'var(--error)' : 'var(--success)';
+        html += '<div style="font-size:13px;padding:3px 0;color:' + col + '">' + icon + ' ' + formatModelName(r.model) + (r.msg ? ' — ' + r.msg : '') + '</div>';
+      });
+      html += '</div>';
+      setHtml('trainResult', html);
+      loadModels();
+      return;
+    }
+
+    var model = _batchQueue[_batchIndex];
+    var total = _batchQueue.length;
+    var curr  = _batchIndex + 1;
+
+    // Update progress bar
+    var pct = Math.round((_batchIndex / total) * 100);
+    var fill = document.getElementById('batchProgressFill');
+    var ptext = document.getElementById('batchProgressText');
+    if (fill) fill.style.width = pct + '%';
+    if (ptext) ptext.textContent = curr + ' / ' + total + ': ' + formatModelName(model);
+
+    setText('trainStatusText', '(' + curr + '/' + total + ') Training ' + formatModelName(model) + '…');
+    setHtml('trainResult', '<div style="color:var(--muted);font-size:13px">Training ' + curr + '/' + total + ': <strong>' + formatModelName(model) + '</strong>…</div>');
+
+    lossChart.startSSE(model, getApiBase(), {
+      onDone: function(evt) {
+        _batchResults.push({ model: model, status: 'ok' });
+        _batchIndex++;
+        _batchNext();
+      },
+      onError: function(msg) {
+        _batchResults.push({ model: model, status: 'error', msg: msg });
+        _batchIndex++;
+        toast(formatModelName(model) + ' failed — continuing…', 'error');
+        _batchNext();
+      },
+    });
+  }
+
+  var btnTrain = document.getElementById('btnTrain');
+  if (btnTrain) btnTrain.addEventListener('click', function() {
+    var selected = getSelectedTrainModels();
+    if (selected.length === 0) { toast('Select at least one model', 'error'); return; }
+    _batchQueue = selected;
+    _batchIndex = 0;
+    _batchResults = [];
     spinner('trainSpinner', true);
     statusBar('trainStatus', true);
-    setText('trainStatusText', 'Training all models...');
-    setResult('trainResult', 'Training all registered models...');
-    var r = await apiFetch('/train/', { method:'POST', headers:{'Content-Type':'application/json'},
-                                        body: JSON.stringify({ action:'train_all' }) });
-    spinner('trainSpinner', false);
-    statusBar('trainStatus', false);
-    setResult('trainResult', r.data, true);
-    toast('All model training complete', 'success');
-    await loadModels();
+    var prog = document.getElementById('batchProgress');
+    if (prog) prog.style.display = 'flex';
+    _batchNext();
+  });
+
+  var btnTrainAll = document.getElementById('btnTrainAll');
+  if (btnTrainAll) btnTrainAll.addEventListener('click', function() {
+    // Check all visible, then trigger train
+    document.querySelectorAll('#trainModelList input[type=checkbox]').forEach(function(cb) { cb.checked = true; });
+    updateSelectedCount();
+    var selected = getSelectedTrainModels();
+    if (selected.length === 0) { toast('No models loaded', 'error'); return; }
+    _batchQueue = selected;
+    _batchIndex = 0;
+    _batchResults = [];
+    spinner('trainSpinner', true);
+    statusBar('trainStatus', true);
+    var prog = document.getElementById('batchProgress');
+    if (prog) prog.style.display = 'flex';
+    _batchNext();
   });
 
   var btnTune = document.getElementById('btnTune');
@@ -592,6 +728,14 @@ function wireButtons() {
   // Evaluate button
   var btnEvaluate = document.getElementById('btnEvaluate');
   if (btnEvaluate) btnEvaluate.addEventListener('click', runEvaluate);
+
+  // Report button
+  var btnReport = document.getElementById('btnReport');
+  if (btnReport) btnReport.addEventListener('click', runReport);
+
+  // Refresh saved reports button
+  var btnRefreshReports = document.getElementById('btnRefreshReports');
+  if (btnRefreshReports) btnRefreshReports.addEventListener('click', loadSavedReports);
 
   // XAI button
   var btnExplain = document.getElementById('btnExplain');
@@ -1070,6 +1214,95 @@ async function runEvaluate() {
     if (out2) out2.innerHTML = '<div style="color:var(--error);padding:12px">Error: ' + (e.message || e) + '</div>';
     toast('Evaluation error: ' + (e.message || e), 'error');
   }
+}
+
+// ─── RUN REPORT ───────────────────────────────────────────────────────────────
+
+async function runReport() {
+  var splitEl = document.getElementById('evalSplit');
+  var split   = splitEl ? splitEl.value : 'test';
+
+  spinner('reportSpinner', true);
+  setHtml('reportResult', '<div style="color:var(--muted);font-size:13px;padding:6px 0">Generating report — evaluating all checkpoints, please wait…</div>');
+
+  try {
+    var r = await apiFetch('/evaluate/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ split: split, run_missing: true }),
+    });
+    spinner('reportSpinner', false);
+
+    if (!r.ok || r.data.status !== 'completed') {
+      var errMsg = r.data.message || r.data.error || 'Report generation failed';
+      setHtml('reportResult', '<div style="color:var(--error);font-size:13px">' + errMsg + '</div>');
+      toast('Report failed: ' + errMsg, 'error');
+      return;
+    }
+
+    var reportUrl = getApiBase() + '/outputs/reports/' + r.data.filename;
+    setHtml('reportResult',
+      '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:4px">' +
+      '<span style="color:var(--success);font-size:13px">Report ready — ' + r.data.evaluated_count + ' models evaluated.</span>' +
+      '<a href="' + reportUrl + '" target="_blank" ' +
+         'style="background:var(--accent);color:#fff;padding:6px 14px;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none">Open Report</a>' +
+      '</div>'
+    );
+    toast('Evaluation report ready!', 'success');
+    loadSavedReports();
+  } catch(e) {
+    spinner('reportSpinner', false);
+    setHtml('reportResult', '<div style="color:var(--error);font-size:13px">Error: ' + (e.message || e) + '</div>');
+    toast('Report error: ' + (e.message || e), 'error');
+  }
+}
+
+// ─── SAVED REPORTS ────────────────────────────────────────────────────────────
+
+async function loadSavedReports() {
+  var el = document.getElementById('savedReportsList');
+  if (!el) return;
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px">Loading…</div>';
+
+  var r = await apiFetch('/evaluate/reports');
+  if (!r.ok || !r.data.reports) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px">Could not load reports.</div>';
+    return;
+  }
+
+  var reports = r.data.reports;
+  if (!reports.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px">No saved reports yet. Generate one above.</div>';
+    return;
+  }
+
+  var rows = reports.map(function(rep) {
+    var date = _reportDateLabel(rep.filename);
+    var url  = getApiBase() + rep.url;
+    return (
+      '<div style="display:flex;align-items:center;justify-content:space-between;' +
+           'padding:9px 0;border-bottom:1px solid var(--border)">' +
+        '<div>' +
+          '<div style="font-size:13px;font-weight:600;color:var(--text)">' + date + '</div>' +
+          '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + rep.filename + ' &middot; ' + rep.size_kb + ' KB</div>' +
+        '</div>' +
+        '<a href="' + url + '" target="_blank" ' +
+           'style="background:var(--accent);color:#fff;padding:5px 13px;border-radius:6px;' +
+                  'font-size:12px;font-weight:600;text-decoration:none;white-space:nowrap">Open</a>' +
+      '</div>'
+    );
+  }).join('');
+
+  el.innerHTML = rows;
+}
+
+function _reportDateLabel(filename) {
+  // evaluation_report_test_20260519_143022.html → "Test · 2026-05-19 14:30"
+  var m = filename.match(/evaluation_report_(\w+)_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})/);
+  if (!m) return filename;
+  return m[1].charAt(0).toUpperCase() + m[1].slice(1) +
+         ' split &middot; ' + m[2] + '-' + m[3] + '-' + m[4] +
+         ' ' + m[5] + ':' + m[6];
 }
 
 // ─── RUN EXPLAIN ──────────────────────────────────────────────────────────────

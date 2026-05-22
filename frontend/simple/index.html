@@ -652,6 +652,61 @@
     .loss-legend-dot   { width: 12px; height: 3px; border-radius: 2px; }
     canvas#lossChart   { width: 100%; height: 180px; display: block; border-radius: var(--radius); }
 
+    /* ─── MULTI-SELECT TRAIN LIST ────────────────────────────────────────── */
+    .train-filter-row {
+      display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px;
+    }
+    .train-filter-row input {
+      width: 100%; padding: 8px 12px; border-radius: var(--radius);
+      border: 1px solid var(--border); background: var(--surface);
+      color: var(--text); font-size: 13px;
+    }
+    .train-filter-row input:focus { outline: none; border-color: var(--accent); }
+    .train-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+    .chip {
+      padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+      border: 1px solid var(--border); background: transparent; color: var(--muted);
+      cursor: pointer; transition: all .15s;
+    }
+    .chip:hover { border-color: var(--accent); color: var(--accent); }
+    .chip-active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+    .train-model-list {
+      max-height: 260px; overflow-y: auto; border: 1px solid var(--border);
+      border-radius: var(--radius-lg); background: var(--surface); padding: 6px 0;
+    }
+    .train-model-list::-webkit-scrollbar { width: 6px; }
+    .train-model-list::-webkit-scrollbar-track { background: transparent; }
+    .train-model-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .tm-item {
+      display: flex; align-items: center; gap: 10px; padding: 7px 14px;
+      cursor: pointer; transition: background .1s;
+    }
+    .tm-item:hover { background: var(--card2); }
+    .tm-item input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+    .tm-label { font-size: 13px; flex: 1; }
+    .tm-tag { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; }
+    .tm-tag-cls { background: #1e40af22; color: #93c5fd; }
+    .tm-tag-seg { background: #16603422; color: #86efac; }
+    .tm-tag-hyb { background: #6b21a822; color: #d8b4fe; }
+    .tm-tag-view { background: #85400022; color: #fde68a; }
+    .train-list-footer {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 8px 4px 4px; margin-bottom: 4px;
+    }
+    .btn-link {
+      background: none; border: none; color: var(--accent); font-size: 12px;
+      cursor: pointer; padding: 2px 6px; border-radius: 4px;
+    }
+    .btn-link:hover { background: var(--accent-dim); }
+    .batch-progress { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+    .batch-progress-bar {
+      flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden;
+    }
+    .batch-progress-fill {
+      height: 100%; background: var(--accent); border-radius: 3px;
+      transition: width .4s ease;
+    }
+
     /* ─── TOAST ───────────────────────────────────────────────────────────── */
     #toast-container {
       position: fixed;
@@ -933,18 +988,47 @@
     <div class="step-card">
       <div class="step-num">2</div>
       <div class="step-body">
-        <div class="step-title">Train Model</div>
+        <div class="step-title">Train Models</div>
         <div class="step-desc">
-          Select a model architecture and train it. Models are grouped by task: classification,
-          segmentation, or hybrid multitask (simultaneous segmentation + classification).
+          Select one or more model architectures and train them sequentially. Use the filter chips
+          to narrow by task, or type to search. Training streams live loss per model.
         </div>
-        <div class="field-row">
-          <label>Model Architecture</label>
-          <select id="trainModelSelect">
-            <option value="">— Select model —</option>
-          </select>
+
+        <!-- Search + filter chips -->
+        <div class="train-filter-row">
+          <input type="text" id="trainSearch" placeholder="Search models..." />
+          <div class="train-chips">
+            <button class="chip chip-active" data-filter="all">All</button>
+            <button class="chip" data-filter="classification">Classification</button>
+            <button class="chip" data-filter="segmentation">Segmentation</button>
+            <button class="chip" data-filter="hybrid">Hybrid</button>
+            <button class="chip" data-filter="view">View-Specific</button>
+          </div>
         </div>
-        <div class="action-row">
+
+        <!-- Checkbox list -->
+        <div class="train-model-list" id="trainModelList">
+          <div style="color:var(--muted);padding:12px;font-size:13px">Connect to server to load models…</div>
+        </div>
+
+        <!-- Footer: count + select helpers -->
+        <div class="train-list-footer">
+          <span id="trainSelectedCount" style="font-size:13px;color:var(--muted)">0 models selected</span>
+          <div style="display:flex;gap:10px">
+            <button class="btn-link" id="btnSelectAll">Select All</button>
+            <button class="btn-link" id="btnClearAll">Clear All</button>
+          </div>
+        </div>
+
+        <!-- Batch progress bar -->
+        <div class="batch-progress" id="batchProgress" style="display:none">
+          <div class="batch-progress-bar">
+            <div class="batch-progress-fill" id="batchProgressFill" style="width:0%"></div>
+          </div>
+          <span id="batchProgressText" style="font-size:12px;color:var(--muted)">0 / 0</span>
+        </div>
+
+        <div class="action-row" style="margin-top:12px">
           <button class="btn btn-primary" id="btnTrain" disabled>▶ Train Selected</button>
           <button class="btn btn-secondary" id="btnTrainAll" disabled>Train All Models</button>
           <span class="spinner hidden" id="trainSpinner"></span>
@@ -1010,7 +1094,21 @@
       </div>
       <div class="action-row">
         <button class="btn btn-primary" id="btnEvaluate" disabled>▶ Evaluate</button>
+        <button class="btn btn-secondary" id="btnReport" disabled>📄 Report Evaluation</button>
         <span class="spinner hidden" id="evalSpinner"></span>
+        <span class="spinner hidden" id="reportSpinner"></span>
+      </div>
+      <div id="reportResult" style="margin-top:10px"></div>
+    </div>
+
+    <!-- Saved reports browser -->
+    <div class="panel" style="max-width:520px;margin-bottom:28px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div class="panel-title" style="margin:0">Saved Reports</div>
+        <button class="btn btn-ghost" id="btnRefreshReports" style="padding:4px 12px;font-size:12px">↻ Refresh</button>
+      </div>
+      <div id="savedReportsList">
+        <div style="color:var(--muted);font-size:13px">No reports found. Generate one above.</div>
       </div>
     </div>
 
@@ -1079,6 +1177,6 @@
 </main>
 
 <div id="toast-container"></div>
-<script src="/ui/app.js?v=6"></script>
+<script src="/ui/app.js?v=7"></script>
 </body>
 </html>

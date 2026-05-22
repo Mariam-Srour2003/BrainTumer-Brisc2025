@@ -12,6 +12,7 @@ except ImportError:
 from ...core.config import get_settings
 from ...core.runtime import get_logger, log_step
 from ...evaluation import Evaluator
+from ...evaluation.report_generator import build_report
 from ...experiments.runner import run_checkpoint_evaluation
 from ...utils.checkpoint import resolve_checkpoint_path
 
@@ -73,3 +74,32 @@ if router is not None:
     @router.post("/checkpoint")
     def evaluate_checkpoint_endpoint(payload: dict[str, Any] | None = None) -> dict[str, Any]:
         return evaluate_checkpoint(payload)
+
+    @router.post("/report")
+    def evaluate_report_endpoint(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload or {}
+        split = str(payload.get("split", "test"))
+        run_missing = bool(payload.get("run_missing", True))
+        log_step(logger, f"Generating evaluation report: split={split}, run_missing={run_missing}.")
+        try:
+            return build_report(split=split, run_missing=run_missing)
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    @router.get("/reports")
+    def list_reports_endpoint() -> dict[str, Any]:
+        """List all saved HTML evaluation reports sorted newest first."""
+        settings = get_settings()
+        report_dir = settings.outputs_dir / "reports"
+        if not report_dir.exists():
+            return {"status": "ok", "reports": []}
+        reports = []
+        for f in sorted(report_dir.glob("*.html"), reverse=True):
+            stat = f.stat()
+            reports.append({
+                "filename": f.name,
+                "url": f"/outputs/reports/{f.name}",
+                "size_kb": round(stat.st_size / 1024, 1),
+                "modified": stat.st_mtime,
+            })
+        return {"status": "ok", "reports": reports}

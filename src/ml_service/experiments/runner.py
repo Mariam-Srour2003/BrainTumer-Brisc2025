@@ -200,12 +200,36 @@ def run_all_registered_models_training(config: ServiceConfig | None = None) -> d
 
     settings = config or get_settings()
     results: dict[str, Any] = {}
+    model_list = list(DEFAULT_MODEL_REGISTRY.list_models())
+    total = len(model_list)
 
-    for model_name in DEFAULT_MODEL_REGISTRY.list_models():
+    log_step(logger, "")
+    log_step(logger, "=" * 64)
+    log_step(logger, f"  TRAINING ALL MODELS  |  {total} model(s) queued")
+    log_step(logger, "=" * 64)
+
+    for idx, model_name in enumerate(model_list, 1):
+        log_step(logger, f"  [{idx}/{total}] Starting: {model_name}")
         try:
-            results[model_name] = run_registered_model_training(model_name, settings)
+            result = run_registered_model_training(model_name, settings)
+            results[model_name] = result
+            status = result.get("status", "?")
+            if status == "completed":
+                metrics = result.get("evaluation", {}).get("metrics", {})
+                task = result.get("train", {}).get("metadata", {}).get("task", "")
+                log_step(logger, f"  [{idx}/{total}] ✓ {model_name} → {status}")
+            else:
+                msg = result.get("message", "")
+                log_step(logger, f"  [{idx}/{total}] ✗ {model_name} → {status}  {msg}")
         except Exception as exc:
             results[model_name] = {"status": "error", "message": str(exc)}
+            log_step(logger, f"  [{idx}/{total}] ✗ {model_name} → ERROR: {exc}")
+
+    completed = sum(1 for r in results.values() if r.get("status") == "completed")
+    log_step(logger, "")
+    log_step(logger, f"  Done — {completed}/{total} completed successfully.")
+    log_step(logger, "=" * 64)
+    log_step(logger, "")
 
     return {
         "status": "completed",
@@ -438,6 +462,34 @@ def _load_model_for_checkpoint(checkpoint_path: Path, settings: ServiceConfig) -
     raise ValueError(f"Unable to reconstruct a model for checkpoint {checkpoint_path}.")
 
 
+def _fmt_eval_metrics(task: str, metrics: dict[str, Any]) -> str:
+    """One-line metrics summary for terminal output."""
+    if task == "segmentation":
+        parts = []
+        if metrics.get("dice_score") is not None:
+            parts.append(f"Dice={metrics['dice_score']:.3f}")
+        if metrics.get("iou") is not None:
+            parts.append(f"IoU={metrics['iou']:.3f}")
+        if metrics.get("hausdorff_distance") is not None:
+            parts.append(f"Hausdorff={metrics['hausdorff_distance']:.1f}px")
+        return "  ".join(parts) or "—"
+    if task == "joint":
+        parts = []
+        if metrics.get("classification_f1_score") is not None:
+            parts.append(f"Cls-F1={metrics['classification_f1_score'] * 100:.1f}%")
+        if metrics.get("segmentation_dice_score") is not None:
+            parts.append(f"Seg-Dice={metrics['segmentation_dice_score']:.3f}")
+        return "  ".join(parts) or "—"
+    parts = []
+    if metrics.get("accuracy") is not None:
+        parts.append(f"Acc={metrics['accuracy'] * 100:.1f}%")
+    if metrics.get("f1_score") is not None:
+        parts.append(f"F1={metrics['f1_score'] * 100:.1f}%")
+    if metrics.get("auc") is not None:
+        parts.append(f"AUC={metrics['auc'] * 100:.1f}%")
+    return "  ".join(parts) or "—"
+
+
 def run_checkpoint_evaluation(
     checkpoint_path: str | Path,
     config: ServiceConfig | None = None,
@@ -448,23 +500,34 @@ def run_checkpoint_evaluation(
 
     settings = config or get_settings()
     checkpoint_path = Path(checkpoint_path)
+
+    log_step(logger, f"  Loading checkpoint: {checkpoint_path.name}")
     model, metadata, task, model_name = _load_model_for_checkpoint(checkpoint_path, settings)
+    log_step(logger, f"    Model : {model_name}")
+    log_step(logger, f"    Task  : {task}")
+    log_step(logger, f"    Split : {split}")
+
     _, view_filter = _parse_view_suffix(model_name)
+    if view_filter:
+        log_step(logger, f"    View  : {view_filter.upper()} (view-specific model)")
     processed_root = settings.processed_divided_data_root if view_filter else None
-    trainer_task = "view_classification" if task == "view_classification" else "classification"
     trainer = Trainer(
         model=model, config=settings,
         training_config=TrainingConfig.from_service_config(settings),
         view_filter=view_filter, processed_root=processed_root,
-        task=trainer_task,
+        task=task,
     )
 
+    log_step(logger, f"    Running {task} inference on '{split}' split ...")
     if task in {"classification", "view_classification"}:
         evaluation = trainer.evaluate_classification(split=split)
     elif task == "segmentation":
         evaluation = trainer.evaluate_segmentation(split=split)
     else:
         evaluation = trainer.evaluate_joint(split=split)
+
+    metrics_line = _fmt_eval_metrics(task, evaluation.metrics)
+    log_step(logger, f"    Results: {metrics_line}")
 
     if task == "view_classification":
         report_class_names = settings.view_class_names
@@ -473,6 +536,7 @@ def run_checkpoint_evaluation(
     else:
         report_class_names = settings.class_names
 
+    log_step(logger, f"    Exporting evaluation artifacts ...")
     report = export_evaluation_report(
         settings.outputs_dir / "evaluations",
         model_name=model_name,
@@ -483,6 +547,7 @@ def run_checkpoint_evaluation(
         checkpoint_path=checkpoint_path,
         class_names=report_class_names,
     )
+    log_step(logger, f"    Artifacts saved → {report.get('evaluation_dir', 'outputs/evaluations')}")
 
     return {
         "status": evaluation.status,
